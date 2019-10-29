@@ -1,10 +1,12 @@
 import io
 import os
 import sys
+import json
+import tempfile
 
 import socket
 
-from flask import Flask, abort, send_file
+from flask import Flask, abort, send_file, jsonify
 from smb.SMBConnection import SMBConnection
 from sesamutils import VariablesConfig, sesam_logger
 from sesamutils.flask import serve
@@ -59,6 +61,46 @@ def process_request(path):
         os.remove("local_file")
     abort(500)
 
+@APP.route("/bulk_read/<path:path>", methods=['GET'])
+def folder_request(path):
+    logger.info(f"Processing request for path '{path}'.")
+
+    conn = create_connection()
+    if not conn.connect(config.host, 445):
+        logger.error("Failed to authenticate with the provided credentials")
+        conn.close()
+        return "Invalid credentials provided for fileshare", 500
+
+    logger.info("Successfully connected to SMB host.")
+
+    share_list = conn.listShares()
+    for share in share_list:
+        if share.name == os.environ.get("share"):
+            target_share = share.name
+
+    # Defined share of interest..
+    logger.info(f"Writing target share from which we start : {target_share}")
+    file_list = conn.listPath(target_share, f"/{path}")
+
+    # Files to write to :
+    files_to_send = []
+
+    logger.info("Listing files found : %s" % file_list)
+    for file_name in file_list:
+        file_obj = tempfile.NamedTemporaryFile()
+        path_to_file = f"/{path}/{file_name.filename}"
+        try:
+            conn.retrieveFile(target_share, path_to_file, file_obj)
+            file_obj.seek(0)
+            file_temp = file_obj.read().decode()
+            files_to_send.append(file_temp)
+            logger.info("Finished appending file to list")
+            file_obj.close()
+        except Exception as e:
+            logger.error(f"Failed to get file from fileshare. Error: {e}")
+    conn.close()
+    logger.info(f"Finished appending files... ;)")
+    return jsonify({'files' : files_to_send})
 
 if __name__ == "__main__":
     logger.info("Starting service...")
