@@ -10,15 +10,17 @@ from flask import Flask, abort, send_file, jsonify
 from smb.SMBConnection import SMBConnection
 from sesamutils import VariablesConfig, sesam_logger
 from sesamutils.flask import serve
+from validator import validate_file, Validator
+
 APP = Flask(__name__)
 
 logger = sesam_logger("cifs-reader", app=APP)
 
 required_env_vars = ["username", "password", "hostname", "host", "share"]
-config = VariablesConfig(required_env_vars)
+optional_env_vars = ["schema_path"]
+config = VariablesConfig(required_env_vars, optional_env_vars)
 if not config.validate():
     sys.exit(1)
-
 
 def create_connection():
     return SMBConnection(config.username, config.password, socket.gethostname(),
@@ -27,6 +29,12 @@ def create_connection():
 
 @APP.route("/<path:path>", methods=['GET'])
 def process_request(path):
+    try:
+        if config.schema_path:
+            schema_path = config.schema_path
+    except AttributeError:
+        schema_path = 'Denmark'
+    
     logger.info(f"Processing request for path '{path}'.")
 
     conn = create_connection()
@@ -48,8 +56,25 @@ def process_request(path):
     try:
         with open('local_file', 'wb') as fp:
             conn.retrieveFile(config.share, path, fp)
-            logger.info("Completed file downloading...", )
-        return send_file('local_file', attachment_filename=file_name)
+            logger.info("Completed file downloading...")
+            if schema_path != "Denmark":
+                logger.info('Validator initiated...') 
+                file_obj = tempfile.NamedTemporaryFile()
+                conn.retrieveFile(config.share, path, file_obj)
+                file_obj.seek(0)
+                xml_content = file_obj.read().decode()    
+                schema_obj = tempfile.NamedTemporaryFile()
+                conn.retrieveFile(config.share, schema_path, schema_obj)
+                schema_obj.seek(0)
+                schema_content = schema_obj.read().decode()
+                validation_resp = validate_file(xml_content, schema_content)
+                logger.debug(f"This is the response from validation func : {validation_resp}")
+                if validation_resp == "Your xml file was validated :)":
+                    return send_file('local_file', attachment_filename=file_name)
+                else:
+                    logger.error('Validation unsuccessfull! :(')
+            else:    
+                return send_file('local_file', attachment_filename=file_name)            
     except Exception as e:
         logger.error(f"Failed to get file from fileshare. Error: {e}")
         logger.debug("Files found on share:")
@@ -63,6 +88,12 @@ def process_request(path):
 
 @APP.route("/bulk_read/<path:path>", methods=['GET'])
 def folder_request(path):
+    try:
+        if config.schema_path:
+            schema_path = config.schema_path
+    except AttributeError:
+        schema_path = 'Denmark'
+
     logger.info(f"Processing request for path '{path}'.")
 
     conn = create_connection()
@@ -93,9 +124,27 @@ def folder_request(path):
             conn.retrieveFile(target_share, path_to_file, file_obj)
             file_obj.seek(0)
             file_temp = file_obj.read().decode()
-            files_to_send.append(file_temp)
-            logger.info("Finished appending file to list")
-            file_obj.close()
+            if schema_path != "Denmark":
+                logger.info('Validator initiated...')
+                validator = Validator(schema_path)
+
+                for file_name in os.listdir(file_list):
+                    logger.info('{}: '.format(file_name), end='')
+
+                    file_path = '{}/{}'.format(file_list, file_name)
+
+                    if validator.validate(file_path):
+                        logger.info('Valid! :)')
+                        files_to_send.append(file_temp)
+                    else:
+                        logger.warning('Not valid! :(')
+                    
+                    logger.info("Finished appending file to list")
+                    file_obj.close()
+            else:
+                files_to_send.append(file_temp)
+                logger.info("Finished appending file to list")
+                file_obj.close()
         except Exception as e:
             logger.error(f"Failed to get file from fileshare. Error: {e}")
     conn.close()
