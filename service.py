@@ -10,7 +10,7 @@ from flask import Flask, abort, send_file, jsonify
 from smb.SMBConnection import SMBConnection
 from sesamutils import VariablesConfig, sesam_logger
 from sesamutils.flask import serve
-from validator import validate_file, Validator
+from validator import validate_file
 
 APP = Flask(__name__)
 
@@ -69,6 +69,8 @@ def process_request(path):
                 schema_content = schema_obj.read().decode()
                 validation_resp = validate_file(xml_content, schema_content)
                 logger.debug(f"This is the response from validation func : {validation_resp}")
+                file_obj.close()
+                schema_obj.close()
                 if validation_resp == "Your xml file was validated :)":
                     return send_file('local_file', attachment_filename=file_name)
                 else:
@@ -126,27 +128,27 @@ def folder_request(path):
             file_temp = file_obj.read().decode()
             if schema_path != "Denmark":
                 logger.info('Validator initiated...')
-                validator = Validator(schema_path)
-
-                for file_name in os.listdir(file_list):
-                    logger.info('{}: '.format(file_name), end='')
-
-                    file_path = '{}/{}'.format(file_list, file_name)
-
-                    if validator.validate(file_path):
-                        logger.info('Valid! :)')
-                        files_to_send.append(file_temp)
-                    else:
-                        logger.warning('Not valid! :(')
+                schema_obj = tempfile.NamedTemporaryFile()
+                conn.retrieveFile(target_share, schema_path, schema_obj)
+                schema_obj.seek(0)
+                schema_content = schema_obj.read().decode()
+                validation_resp = validate_file(file_temp, schema_content)
+                logger.debug(f"This is the response from validation func : {validation_resp}")
+                if validation_resp == "Your xml file was validated :)":
+                    files_to_send.append(file_temp)
+                else:
+                    logger.error('Validation unsuccessfull! :(')
                     
-                    logger.info("Finished appending file to list")
-                    file_obj.close()
+                logger.info("Finished appending file to list")
+                file_obj.close()
+                schema_obj.close()
             else:
                 files_to_send.append(file_temp)
                 logger.info("Finished appending file to list")
                 file_obj.close()
         except Exception as e:
             logger.error(f"Failed to get file from fileshare. Error: {e}")
+    
     conn.close()
     logger.info(f"Finished appending files... ;)")
     return jsonify({'files' : files_to_send})
